@@ -1,0 +1,24 @@
+name = "backend"
+main = "build/worker/shim.mjs"
+compatibility_date = "2025-07-30"
+
+[build]
+command = "cargo install -q worker-build && worker-build --release"
+
+[[hyperdrive]]
+binding = "DATABASE"
+id = "00523c98d9264eaeb79d0ddd8e750de3"
+localConnectionString = "postgres://postgres:ThisIsLocalPassword@localhost:5432/beadatabase?schema=public"
+
+[vars]
+DASHBOARD_URL="http://localhost:5173"
+DISCORD_CLIENT_ID="1340907937471660142"
+
+[durable_objects]
+bindings = [
+    { name = "BOTROOM", class_name = "BotRoom" },
+]
+
+[[migrations]]
+tag = "v1"
+new_classes = ["BotRoom"]
