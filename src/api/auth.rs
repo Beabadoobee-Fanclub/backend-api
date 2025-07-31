@@ -8,16 +8,18 @@ use axum::{
     Extension, Json, Router,
 };
 use cookie::{time::Duration, Cookie};
+use tracing::{error, info, warn};
 use worker::{console_error, console_log, Env};
 
 use crate::{
     services::{
-        auth::{DiscordAPIClient, DiscordOAuth2, DiscordOAuth2Scope},
+        auth::{remove_error_cookies, DiscordAPIClient, DiscordOAuth2, DiscordOAuth2Scope},
         cookie::CookieJar,
         get_discord_env,
         user::{DiscordUser, DiscordUserApi},
     },
-    AppStateArc, DASHBOARD_URL,
+    state::{server_info::ServerInfoArc, user::RequestedUser},
+    DASHBOARD_URL,
 };
 
 pub fn router() -> Router {
@@ -30,61 +32,62 @@ pub fn router() -> Router {
 
 async fn login(
     Extension(env): Extension<Env>,
-    Extension(app_state): Extension<AppStateArc>,
-    jar: CookieJar,
-) -> Redirect {
+    Extension(server_info): Extension<ServerInfoArc>,
+    Extension(requested_user): Extension<RequestedUser>,
+) -> Result<Redirect, StatusCode> {
     let Ok((client_id, _)) = get_discord_env(&env) else {
-        console_error!("Failed to get Discord environment variables");
-        return Redirect::to(&app_state.webpage);
+        error!("Failed to get Discord environment variables");
+        return Ok(Redirect::to(server_info.webpage()));
     };
 
-    let redirect = format!("{}/api/auth/redirect", app_state.api_host);
-    match jar.get("discord_token") {
-        Some(_) => {
-            let dashboard = format!("{}/dashboard", app_state.webpage);
-            console_error!("User is already logged in, redirecting to dashboard");
-            Redirect::to(&dashboard)
-        }
-        None => {
-            let discord_oauth = DiscordOAuth2 {
-                client_id,
-                redirect_uri: redirect,
-                scopes: vec![
-                    DiscordOAuth2Scope::Identify,
-                    DiscordOAuth2Scope::Guilds,
-                    DiscordOAuth2Scope::Email,
-                ],
-            };
-
-            let discord_url = discord_oauth.get_url();
-            console_log!("Redirecting to Discord OAuth2 login");
-            Redirect::temporary(discord_url.as_ref())
-        }
+    if let RequestedUser::Bot(_) = requested_user {
+        warn!("Bots cannot log in through the web interface");
+        return Err(StatusCode::FORBIDDEN);
     }
+
+    if let RequestedUser::UserWithToken(_) = requested_user {
+        let dashboard = format!("{}/dashboard", server_info.webpage());
+        warn!("User is already logged in, redirecting to dashboard");
+        return Ok(Redirect::to(&dashboard));
+    }
+
+    let redirect = format!("{}/api/auth/redirect", server_info.api_host());
+    let discord_oauth = DiscordOAuth2 {
+        client_id,
+        redirect_uri: redirect,
+        scopes: vec![
+            DiscordOAuth2Scope::Identify,
+            DiscordOAuth2Scope::Guilds,
+            DiscordOAuth2Scope::Email,
+        ],
+    };
+
+    let discord_url = discord_oauth.get_url();
+    info!("Redirecting to Discord OAuth2 login");
+    Ok(Redirect::temporary(discord_url.as_ref()))
 }
 
 #[worker::send]
 async fn redirect(
     Extension(env): Extension<Env>,
-    Extension(app_state): Extension<AppStateArc>,
+    Extension(server_info): Extension<ServerInfoArc>,
     Query(params): Query<HashMap<String, String>>,
     jar: CookieJar,
 ) -> Result<(CookieJar, CookieJar, Redirect), Redirect> {
-    let webpage = app_state.webpage.clone();
-
+    let webpage = server_info.webpage();
     let dashboard = format!("{}/dashboard", webpage);
 
     let Ok((client_id, client_secret)) = get_discord_env(&env) else {
-        console_error!("Failed to get Discord environment variables");
-        return Err(Redirect::temporary(&webpage));
+        error!("Failed to get Discord environment variables");
+        return Err(Redirect::temporary(webpage));
     };
 
-    let redirect_uri = format!("{}/api/auth/redirect", app_state.api_host);
+    let redirect_uri = format!("{}/api/auth/redirect", server_info.api_host());
     let code = match params.get("code") {
         Some(code) => code,
         None => {
-            console_error!("No code provided in redirect");
-            return Err(Redirect::temporary(&webpage));
+            error!("No code provided in redirect");
+            return Err(Redirect::temporary(webpage));
         }
     };
 
@@ -96,8 +99,8 @@ async fn redirect(
     let token = match discord_api.get_access_token(code.clone()).await {
         Ok(token) => token,
         Err(e) => {
-            console_error!("Failed to get access token: {}", e);
-            return Err(Redirect::to(&webpage));
+            error!("Failed to get access token: {}", e);
+            return Err(Redirect::to(webpage));
         }
     };
 
@@ -110,62 +113,30 @@ async fn redirect(
     ))
 }
 
-#[axum::debug_handler]
 #[worker::send]
 async fn status(
-    Extension(app_state): Extension<AppStateArc>,
-    Extension(env): Extension<Env>,
+    Extension(requested_user): Extension<RequestedUser>,
     jar: CookieJar,
-) -> Result<
-    (Option<(CookieJar, CookieJar)>, Json<DiscordUser>),
-    (Option<(CookieJar, CookieJar)>, StatusCode),
-> {
-    let (token, cookies) = match jar.get("discord_token").map(|c| c.value().to_string()) {
-        Some(token) => (token, None),
-        None => {
-            let Ok((client_id, client_secret)) = get_discord_env(&env) else {
-                console_error!("Failed to get Discord environment variables");
-                return Err((None, StatusCode::INTERNAL_SERVER_ERROR));
-            };
-            let Some(refresh_token) = jar
-                .get("discord_refresh_token")
-                .map(|c| c.value().to_string())
-            else {
-                console_error!("No access token or refresh token found in cookies");
-                return Err((None, StatusCode::UNAUTHORIZED));
-            };
-
-            let redirect_uri = format!("{}/api/auth/redirect", app_state.api_host);
-
-            let discord_api =
-                DiscordAPIClient::new(client_id.clone(), client_secret.clone(), redirect_uri);
-
-            let token = discord_api
-                .refresh_access_token(&refresh_token)
-                .await
-                .map_err(|e| {
-                    console_error!("Failed to refresh access token: {}", e);
-                    (None, StatusCode::UNAUTHORIZED)
-                })?;
-            let cookies = DiscordAPIClient::set_cookies(token.clone());
-
-            (
-                token.access_token().to_string(),
-                Some(add_success_cookies(&jar, cookies)),
-            )
+) -> Result<Json<DiscordUser>, (Option<(CookieJar, CookieJar)>, StatusCode)> {
+    let user = match requested_user {
+        RequestedUser::UserWithToken(user) => user,
+        _ => {
+            error!("Unauthorized access to status endpoint");
+            return Err((None, StatusCode::UNAUTHORIZED));
         }
     };
-    let authorization = format!("Bearer {}", token);
+
+    let authorization = format!("Bearer {}", user.access_token());
     let discord_user_api = DiscordUserApi::new(authorization);
     let user = match discord_user_api.get_user().await {
         Ok(user) => user,
         Err(e) => {
-            console_error!("Failed to fetch user data: {}", e);
+            error!("Failed to fetch user data: {}", e);
             return Err((Some(remove_error_cookies(&jar)), StatusCode::UNAUTHORIZED));
         }
     };
 
-    Ok((cookies, Json(user)))
+    Ok(Json(user))
 }
 
 async fn logout(
@@ -177,28 +148,4 @@ async fn logout(
         .map(|s| s.to_string())
         .unwrap_or_else(|_| DASHBOARD_URL.into());
     (remove_error_cookies(&jar), Redirect::to(&webpage))
-}
-
-fn remove_error_cookies(jar: &CookieJar) -> (CookieJar, CookieJar) {
-    let discord_token = Cookie::build(("discord_token", ""))
-        .path("/")
-        .http_only(true)
-        .max_age(Duration::ZERO)
-        .build();
-    let discord_refresh_token = Cookie::build(("discord_refresh_token", ""))
-        .path("/")
-        .http_only(true)
-        .max_age(Duration::ZERO)
-        .build();
-    (
-        jar.clone().add(discord_token),
-        jar.clone().add(discord_refresh_token),
-    )
-}
-
-fn add_success_cookies(jar: &CookieJar, cookies: [Cookie<'static>; 2]) -> (CookieJar, CookieJar) {
-    (
-        jar.clone().add(cookies[0].clone()),
-        jar.clone().add(cookies[1].clone()),
-    )
 }

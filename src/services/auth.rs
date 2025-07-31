@@ -1,9 +1,10 @@
 use cookie::{Cookie, SameSite};
 use reqwest::ClientBuilder;
 use serde::{Deserialize, Serialize};
+use time::Duration;
 use worker::{console_error, Result, Url};
 
-use crate::DISCORD_API_BASE_URL;
+use crate::{services::cookie::CookieJar, DISCORD_API_BASE_URL};
 
 pub enum DiscordOAuth2Scope {
     Identify,
@@ -120,6 +121,21 @@ impl DiscordOAuthAccessToken {
 
     pub fn refresh_token(&self) -> &str {
         &self.refresh_token
+    }
+}
+
+pub enum DiscordCookie {
+    AccessToken,
+    RefreshToken,
+}
+
+impl std::fmt::Display for DiscordCookie {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            DiscordCookie::AccessToken => "discord_token",
+            DiscordCookie::RefreshToken => "discord_refresh_token",
+        };
+        write!(f, "{}", s)
     }
 }
 
@@ -266,21 +282,54 @@ impl DiscordAPIClient {
     }
 
     pub fn set_cookies(tokens: DiscordOAuthAccessToken) -> [Cookie<'static>; 2] {
-        let access_cookie = Cookie::build(("discord_token", tokens.access_token.clone()))
-            .path("/")
-            .http_only(true)
-            .secure(true)
-            .same_site(SameSite::None)
-            .max_age(cookie::time::Duration::seconds(tokens.expires_in))
-            .build();
+        let access_cookie = Cookie::build((
+            DiscordCookie::AccessToken.to_string(),
+            tokens.access_token.clone(),
+        ))
+        .path("/")
+        .http_only(true)
+        .secure(true)
+        .same_site(SameSite::None)
+        .max_age(cookie::time::Duration::seconds(tokens.expires_in))
+        .build();
 
-        let refresh_cookie = Cookie::build(("discord_refresh_token", tokens.refresh_token.clone()))
-            .path("/")
-            .http_only(true)
-            .secure(true)
-            .same_site(SameSite::None)
-            .build();
+        let refresh_cookie = Cookie::build((
+            DiscordCookie::RefreshToken.to_string(),
+            tokens.refresh_token.clone(),
+        ))
+        .path("/")
+        .http_only(true)
+        .secure(true)
+        .same_site(SameSite::None)
+        .build();
 
         [access_cookie, refresh_cookie]
     }
+}
+
+pub fn remove_error_cookies(jar: &CookieJar) -> ((CookieJar, CookieJar)) {
+    let discord_token = Cookie::build((DiscordCookie::AccessToken.to_string(), ""))
+        .path("/")
+        .http_only(true)
+        .max_age(Duration::ZERO)
+        .build();
+    let discord_refresh_token = Cookie::build((DiscordCookie::RefreshToken.to_string(), ""))
+        .path("/")
+        .http_only(true)
+        .max_age(Duration::ZERO)
+        .build();
+    (
+        jar.clone().add(discord_token),
+        jar.clone().add(discord_refresh_token),
+    )
+}
+
+pub fn add_success_cookies(
+    jar: &CookieJar,
+    cookies: [Cookie<'static>; 2],
+) -> (CookieJar, CookieJar) {
+    (
+        jar.clone().add(cookies[0].clone()),
+        jar.clone().add(cookies[1].clone()),
+    )
 }
