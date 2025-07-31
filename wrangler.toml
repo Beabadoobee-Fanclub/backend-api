@@ -2,6 +2,9 @@ name = "backend"
 main = "build/worker/shim.mjs"
 compatibility_date = "2025-07-30"
 
+[placement]
+mode = "smart"
+
 [build]
 command = "cargo install -q worker-build && worker-build --release"
 
@@ -18,7 +21,3 @@ DISCORD_CLIENT_ID="1340907937471660142"
 bindings = [
     { name = "BOTROOM", class_name = "BotRoom" },
 ]
-
-[[migrations]]
-tag = "v1"
-new_classes = ["BotRoom"]
