@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use axum::{
     extract::Query,
@@ -8,7 +8,7 @@ use axum::{
     Extension, Json, Router,
 };
 use cookie::{time::Duration, Cookie};
-use worker::{console_error, Env};
+use worker::{console_error, console_log, Env};
 
 use crate::{
     services::{
@@ -17,7 +17,7 @@ use crate::{
         get_discord_env,
         user::{DiscordUser, DiscordUserApi},
     },
-    DASHBOARD_URL,
+    AppStateArc, DASHBOARD_URL,
 };
 
 pub fn router() -> Router {
@@ -28,26 +28,27 @@ pub fn router() -> Router {
         .route("/logout", get(logout))
 }
 
-async fn login(Extension(env): Extension<Env>, jar: CookieJar) -> Redirect {
-    let webpage = env
-        .var("DASHBOARD_URL")
-        .map(|s| s.to_string())
-        .unwrap_or_else(|_| DASHBOARD_URL.into());
+async fn login(
+    Extension(env): Extension<Env>,
+    Extension(app_state): Extension<AppStateArc>,
+    jar: CookieJar,
+) -> Redirect {
     let Ok((client_id, _)) = get_discord_env(&env) else {
         console_error!("Failed to get Discord environment variables");
-        return Redirect::to(&webpage);
+        return Redirect::to(&app_state.webpage);
     };
 
+    let redirect = format!("{}/api/auth/redirect", app_state.api_host);
     match jar.get("discord_token") {
         Some(_) => {
-            let dashboard = format!("{}/dashboard", webpage);
+            let dashboard = format!("{}/dashboard", app_state.webpage);
             console_error!("User is already logged in, redirecting to dashboard");
             Redirect::to(&dashboard)
         }
         None => {
             let discord_oauth = DiscordOAuth2 {
                 client_id,
-                redirect_uri: "http://127.0.0.1:8787/api/auth/redirect".to_string(),
+                redirect_uri: redirect,
                 scopes: vec![
                     DiscordOAuth2Scope::Identify,
                     DiscordOAuth2Scope::Guilds,
@@ -56,7 +57,7 @@ async fn login(Extension(env): Extension<Env>, jar: CookieJar) -> Redirect {
             };
 
             let discord_url = discord_oauth.get_url();
-            console_error!("Redirecting to Discord OAuth2 login");
+            console_log!("Redirecting to Discord OAuth2 login");
             Redirect::temporary(discord_url.as_ref())
         }
     }
@@ -65,13 +66,12 @@ async fn login(Extension(env): Extension<Env>, jar: CookieJar) -> Redirect {
 #[worker::send]
 async fn redirect(
     Extension(env): Extension<Env>,
+    Extension(app_state): Extension<AppStateArc>,
     Query(params): Query<HashMap<String, String>>,
     jar: CookieJar,
 ) -> Result<(CookieJar, CookieJar, Redirect), Redirect> {
-    let webpage = env
-        .var("DASHBOARD_URL")
-        .map(|s| s.to_string())
-        .unwrap_or_else(|_| DASHBOARD_URL.into());
+    let webpage = app_state.webpage.clone();
+
     let dashboard = format!("{}/dashboard", webpage);
 
     let Ok((client_id, client_secret)) = get_discord_env(&env) else {
@@ -79,7 +79,7 @@ async fn redirect(
         return Err(Redirect::temporary(&webpage));
     };
 
-    let redirect_uri = "http://127.0.0.1:8787/api/auth/redirect".to_string();
+    let redirect_uri = format!("{}/api/auth/redirect", app_state.api_host);
     let code = match params.get("code") {
         Some(code) => code,
         None => {
@@ -113,6 +113,7 @@ async fn redirect(
 #[axum::debug_handler]
 #[worker::send]
 async fn status(
+    Extension(app_state): Extension<AppStateArc>,
     Extension(env): Extension<Env>,
     jar: CookieJar,
 ) -> Result<
@@ -134,7 +135,7 @@ async fn status(
                 return Err((None, StatusCode::UNAUTHORIZED));
             };
 
-            let redirect_uri = "http://127.0.0.1:8787/api/auth/redirect".to_string();
+            let redirect_uri = format!("{}/api/auth/redirect", app_state.api_host);
 
             let discord_api =
                 DiscordAPIClient::new(client_id.clone(), client_secret.clone(), redirect_uri);

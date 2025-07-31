@@ -24,7 +24,11 @@ pub const DASHBOARD_URL: &str = "http://localhost:5173";
 
 pub struct AppState {
     database: Database,
+    api_host: String,
+    webpage: String,
 }
+
+pub type AppStateArc = Arc<AppState>;
 
 #[event(start)]
 fn start() {
@@ -61,10 +65,6 @@ async fn fetch(req: HttpRequest, env: Env, ctx: Context) -> Result<Response<Body
             .unwrap());
     };
 
-    let app_state = Arc::new(AppState {
-        // Initialize your application state here
-        database: Database::new(hyperdrive),
-    });
     let Ok(webpage) = env.var("DASHBOARD_URL").map(|s| s.to_string()) else {
         console_error!("Failed to get DASHBOARD_URL");
         return Ok(Response::builder()
@@ -72,6 +72,21 @@ async fn fetch(req: HttpRequest, env: Env, ctx: Context) -> Result<Response<Body
             .body(Body::from("Internal Server Error"))
             .unwrap());
     };
+
+    let Ok(api_host) = env.var("API_HOST").map(|s| s.to_string()) else {
+        console_error!("Failed to get API_HOST");
+        return Ok(Response::builder()
+            .status(StatusCode::INTERNAL_SERVER_ERROR)
+            .body(Body::from("Internal Server Error"))
+            .unwrap());
+    };
+
+    let app_state = Arc::new(AppState {
+        // Initialize your application state here
+        database: Database::new(hyperdrive),
+        webpage: webpage.clone(),
+        api_host,
+    });
 
     let mut app = Router::new()
         .nest("/api", api::router())

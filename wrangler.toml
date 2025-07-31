@@ -5,6 +5,9 @@ compatibility_date = "2025-07-30"
 [placement]
 mode = "smart"
 
+[observability.logs]
+enabled = true
+
 [build]
 command = "cargo install -q worker-build && worker-build --release"
 
@@ -13,11 +16,43 @@ binding = "DATABASE"
 id = "00523c98d9264eaeb79d0ddd8e750de3"
 localConnectionString = "postgres://postgres:ThisIsLocalPassword@localhost:5432/beadatabase?schema=public"
 
+[env.production]
+hyperdrive = [
+    { binding = "DATABASE", id = "00523c98d9264eaeb79d0ddd8e750de3" }
+]
+
+[env.production.durable_objects]
+bindings = [
+    { name = "BOTROOM", class_name = "BotRoom" },
+]
+[env.production.vars]
+DASHBOARD_URL="https://webpage-production.giloe-dev.workers.dev"
+API_HOST="https://backend-production.giloe-dev.workers.dev"
+DISCORD_CLIENT_ID="1340907937471660142"
+
+[env.staging]
+hyperdrive = [
+    { binding = "DATABASE", id = "00523c98d9264eaeb79d0ddd8e750de3" }
+]
+[env.staging.durable_objects]
+bindings = [
+    { name = "BOTROOM", class_name = "BotRoom" },
+]
+[env.staging.vars]
+DASHBOARD_URL="https://webpage-staging.giloe-dev.workers.dev"
+API_HOST="https://backend-staging.giloe-dev.workers.dev"
+DISCORD_CLIENT_ID="1340907937471660142"
+
 [vars]
 DASHBOARD_URL="http://localhost:5173"
+API_HOST="http://127.0.0.1:8787"
 DISCORD_CLIENT_ID="1340907937471660142"
 
 [durable_objects]
 bindings = [
     { name = "BOTROOM", class_name = "BotRoom" },
 ]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes  = ["BotRoom"]
