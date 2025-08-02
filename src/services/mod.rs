@@ -3,6 +3,7 @@ use worker::{console_error, Env};
 pub mod auth;
 pub mod cookie;
 pub mod database;
+pub mod guilds;
 pub mod user;
 
 pub fn get_discord_env(env: &Env) -> Result<(String, String), String> {

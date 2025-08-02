@@ -167,9 +167,11 @@ pub struct DiscordOAuth2 {
 }
 
 impl DiscordOAuth2 {
-    pub fn get_url(&self) -> Url {
-        let discord_url = format!("{}/oauth2/authorize", DISCORD_API_BASE_URL);
-        let mut discord_url = Url::parse(&discord_url).unwrap();
+    fn setup_url(&self) -> Url {
+        Url::parse(&format!("{}/oauth2/authorize", DISCORD_API_BASE_URL)).unwrap()
+    }
+    pub fn get_auth_url(&self) -> Url {
+        let mut discord_url = self.setup_url();
         let scope_string = self
             .scopes
             .iter()
@@ -186,6 +188,23 @@ impl DiscordOAuth2 {
         );
 
         discord_url.set_query(Some(&query));
+        discord_url
+    }
+
+    pub fn get_add_bot_url(&self) -> Url {
+        let mut discord_url = self.setup_url();
+        let scope_string = self
+            .scopes
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>()
+            .join("+");
+        discord_url.set_query(Some(&format!(
+            "client_id={}&redirect_uri={}&permissions=8&scope={}",
+            &self.client_id,
+            urlencoding::encode(&self.redirect_uri),
+            scope_string
+        )));
         discord_url
     }
 }

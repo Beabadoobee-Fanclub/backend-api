@@ -62,7 +62,7 @@ async fn login(
         ],
     };
 
-    let discord_url = discord_oauth.get_url();
+    let discord_url = discord_oauth.get_auth_url();
     info!("Redirecting to Discord OAuth2 login");
     Ok(Redirect::temporary(discord_url.as_ref()))
 }
